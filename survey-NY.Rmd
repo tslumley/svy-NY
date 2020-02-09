@@ -1,0 +1,604 @@
+---
+title: "Analysing Multistage Survey Data Using R"
+author: "Thomas Lumley<br> github/tslumley/svy-NY"
+institute: "University of Auckland (and R-core)"
+date: "2020/2/11"
+output:
+  xaringan::moon_reader:
+    css: [default,tamu,tamu-fonts]
+    lib_dir: libs
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+---
+
+```{r setup, include=FALSE}
+options(htmltools.dir.version = FALSE)
+```
+
+class: inverse, center, middle
+
+# Why you should care
+
+---
+
+# Free Data!
+
+- Health:  NHANES, NHIS, CHIS
+- Employment: CPS
+- Attitudes: GSS, NLSY
+- Everything: ACS
+
+Or, you might be designing your own data collection
+
+---
+
+# Scary warnings
+
+
+> Standard statistical software packages generally do not take into account four common characteristics of sample survey data: (1) unequal probability selection of observations, (2) clustering of observations, (3) stratification and (4) nonresponse and other adjustments. Point estimates of population parameters are impacted by the value of the analysis weight for each observation. These weights depend upon the selection probabilities and other survey design features such as stratification and clustering. Hence, **standard packages will yield biased point estimates** if the weights are ignored. Estimated variance formulas for point estimates based on sample survey data are impacted by clustering, stratification and the weights. By ignoring these aspects, **standard packages generally underestimate the estimated variance of a point estimate, sometimes substantially so.** (Brogan, D, 1998, in *Encyclopedia of Biostatistics*)
+
+
+😰😰😰😰
+
+---
+
+# Typical presentation
+
+<img src="./scary-math.png" height="500px">
+
+😰😰😰😰😰😰😰😰
+
+---
+
+class: inverse, center, middle
+
+
+# R to the rescue
+
+
+---
+R<sup>1</sup> lets you do most of the analyses you're used to with complex survey data.
+
+You need to know three things
+
+1. Weights
+2. Clusters
+3. Strata
+
+.footnote[1: and Stata] 
+
+---
+
+# Weights
+
+A weight of 100 means *this observation represents 100 people in the population*
+
+- perhaps sampled with probability $1/100$
+- but also non-response adjustment
+- and frame corrections 
+- sometimes household size
+- maybe telephones per household
+- and calibration to Census data
+
+Sometimes we oversample (and have smaller weights) because a group is interesting; sometimes because they are inexpensive; sometimes it just happens.
+
+---
+
+# Clusters
+
+If you have to go visit people, it's easier to do it in groups
+
+- cities or counties
+- neighbourhoods
+- workplaces
+- schools
+- households
+
+You get less information per observation, but more information per hour or per dollar.
+
+---
+
+# Strata
+
+If you sample 1000 people from the US, you get
+
+- 10 **on average** from Iowa
+- 2 **on average** from DC
+
+You might fix these numbers, sample
+
+- exactly 10 from Iowa
+- exacty 2 from DC
+
+These are strata. 
+
+Stratified sampling makes the sample more representative of the population; increases information per observation.
+
+---
+
+# Multistage sampling
+
+Sample clusters within strata, with specified weights
+
+Within each cluster, sample subclusters within substrata with specified weights
+
+And so on. 
+
+If the sample is much smaller than the population, you can pretend you had just one stage of cluster/strata (but all the weights)
+
+Survey statistics calls this approximation **with replacement**, for boring maths reasons.
+
+Nearly all public-use data uses the with-replacement approximation. 
+
+---
+class: inverse, center, middle
+
+
+# The survey package in 1 slide
+
+---
+
+```{r, include=FALSE}
+library(survey)
+```
+
+Put your data and metadata in a survey design object.
+
+```{r}
+data(nhanes)
+d_nhanes <- svydesign(id=~SDMVPSU, strata=~SDMVSTRA, weights=~WTMEC2YR,
+           nest=TRUE,data=nhanes)
+```
+
+
+Use the survey design object where you'd normally use a data frame, in a function that probably has a `svy` prefix
+
+```{r, results='hide'}
+svymean(~HI_CHOL, design=d_nhanes, na.rm=TRUE)
+svyby(~HI_CHOL, ~agecat, svymean, design=d_nhanes, na.rm=TRUE)
+svyglm(HI_CHOL~race+agecat+RIAGENDR, design=d_nhanes, family=quasibinomial)
+```
+
+
+---
+class: inverse, center, middle
+
+# Data exploration
+
+---
+
+# Putting weights in graphics
+
+- boxplot: sample quartiles -> estimated population quartiles
+- histogram: sample proportions -> estimated population proportions
+- density: sum of kernels -> weighted sum of kernels
+- scatterplots: ???
+
+---
+
+# Scatterplots
+
+- thinning: subsample the data to equal probability
+- alpha channel: opacity proportional to weight
+- hexbins: sample count -> estimated population count
+
+`svyplot(,type="??")`
+
+- "bubble": don't do this
+- "hex": hexbins using hex size
+- "grayhex": hexbins using shading
+- "subsample": thinning
+- "transparent": partially transparent
+
+---
+
+# Sodium intake in NHANES 
+
+National Health and Nutrition Examination Survey
+
+- continuous health survey
+- samples about 15k people in each two-year wave
+- includes detailed medical exam, so few clusters
+- highly stratified sampling
+- public use data!
+- actually four-phase design, but public use files use 'with-replacement' approximation
+
+We will look at dietary sodium intake and blood pressure.
+
+---
+
+# Set up data
+
+```{r}
+library(foreign)
+
+demo<-read.xport("demo_c.xpt")[,c(1:8,28:31)]
+bp<-read.xport("bpx_c.xpt")
+bm<-read.xport("bmx_c.xpt")[,c("SEQN","BMXBMI")]
+diet<-read.xport("dr1tot_c.xpt")[,c(1:52,63,64)]
+
+nhanes34<-merge(demo,bp,by="SEQN")
+nhanes34<-merge(nhanes34,bm,by="SEQN")
+nhanes34<-merge(nhanes34,diet,by="SEQN")
+
+demo5<-read.xport("demo_d.xpt")[,c(1:8,39:42)]
+bp5<-read.xport("bpx_x.xpt")
+bp5$BPXSAR<-rowMeans(bp5[,c("BPXSY1","BPXSY2","BPXSY3","BPXSY4")],
+    na.rm=TRUE)
+bp5$BPXDAR<-rowMeans(bp5[,c("BPXDI1","BPXDI2","BPXDI3","BPXDI4")],
+    na.rm=TRUE)
+bm5<-read.xport("bmx_d.xpt")[,c("SEQN","BMXBMI")]
+diet5<-read.xport("dr1tot_d.xpt")[,c(1:52,64,65)]
+
+nhanes56<-merge(demo5,bp5,by="SEQN")
+nhanes56<-merge(nhanes56,bm5,by="SEQN")
+nhanes56<-merge(nhanes56,diet5,by="SEQN")
+
+nhanes<-rbind(nhanes34,nhanes56)
+```
+
+---
+
+# Survey stuff
+
+### Weights
+
+We're using *dietary interview* data, need to use dietary interview weights `WTDRD1`
+
+Each wave has weights that rescale the two-year dietary interview sample to the US [civilian, non-institutionalised] population
+
+We have two waves: need to scale each weight down by half.
+
+
+```{r}
+nhanes$fouryearwt<-nhanes$WTDRD1/2
+```
+
+People who aren't in the dietary interview sample don't exist. They are dead to us. 
+
+---
+
+# Survey stuff
+
+
+### Structure
+
+The documentation tells us the strata and cluster ('PSU') variables
+
+`nest=TRUE` tells R to just assume the clusters are properly nested in the strata and the cluster `1` in each stratum is different. 
+
+
+```{r}
+des<-svydesign(id=~SDMVPSU,strat=~SDMVSTRA,weights=~fouryearwt,
+   nest=TRUE, data=subset(nhanes, !is.na(WTDRD1)))
+```
+
+---
+
+```{r}
+des
+
+colnames(des)
+```
+
+
+
+---
+
+# Units
+
+Dietary sodium/potassium a are large numbers in mg/day.
+
+I want grams/day. Or moles, like normal countries use.
+
+```{r}
+des<-update(des, sodium=DR1TSODI/1000, potassium=DR1TPOTA/1000)
+des<-update(des, namol=sodium/23, kmol=potassium/39)
+```
+
+---
+
+## Summaries
+
+```{r}
+svymean(~sodium+potassium, des, na.rm=TRUE)
+svyquantile(~sodium+potassium, des, quantiles=c(0.25,0.5,0.75),na.rm=TRUE)
+svymean(~sodium, subset(des, RIAGENDR==1), na.rm=TRUE)
+```
+
+---
+
+```{r}
+svyby(~sodium, ~RIDRETH1, svymean, design=des, na.rm=TRUE)
+```
+
+---
+
+# Scatterplots
+
+```{r}
+svyplot(BPXDAR~RIDAGEYR,style="hex",design=des,legend=0,
+        xlab="Age (yrs)",ylab="Diastolic BP (mmHg)")
+```
+
+---
+
+```{r fig.height=6}
+svyplot(BPXDAR~RIDAGEYR,style="trans",design=des,legend=0,
+        xlab="Age (yrs)",ylab="Diastolic BP (mmHg)", pch=19,alpha=c(0,0.3))
+```
+
+---
+
+# Smoothers
+
+```{r, results='hide', fig.show='hide'}
+men<-svysmooth(BPXDAR~RIDAGEYR,design=subset(des, RIAGENDR==1),bandwidth=10)
+women<-svysmooth(BPXDAR~RIDAGEYR,design=subset(des, RIAGENDR==2),bandwidth=10)
+plot(men,ylim=c(40,80),ylab="Diastolic BP (mmHg)",xlab="Age (yrs)")
+lines(women,lty=2)
+legend("bottomright",lty=1:2,bty="n",legend=c("Men","Women"))
+```
+
+---
+
+```{r, echo=FALSE}
+men<-svysmooth(BPXDAR~RIDAGEYR,design=subset(des, RIAGENDR==1),bandwidth=10)
+women<-svysmooth(BPXDAR~RIDAGEYR,design=subset(des, RIAGENDR==2),bandwidth=10)
+plot(men,ylim=c(40,80),ylab="Diastolic BP (mmHg)",xlab="Age (yrs)")
+lines(women,lty=2)
+legend("bottomright",lty=1:2,bty="n",legend=c("Men","Women"))
+```
+---
+
+```{r, results='hide', fig.show='hide'}
+{{median<-svysmooth(BPXDAR~RIDAGEYR,design=des,method="quantreg",quantile=0.5)}}
+plot(median,ylim=c(30,90),ylab="Diastolic BP (mmHg)",xlab="Age (yrs)",lwd=2)
+for(qi in c(.25,.75)){
+  quartile <- svysmooth(BPXDAR~RIDAGEYR,design=des,
+	                      method="quantreg",quantile=qi)
+	lines(quartile,lwd=1)
+}
+for(qi in c(.1,.9)){
+	decile <- svysmooth(BPXDAR~RIDAGEYR,design=des,
+	                    method="quantreg",quantile=qi)
+	lines(decile,lwd=1,lty=3)
+}
+legend("bottomright",lty=c(1,1,3),lwd=c(2,1,1),bty="n",
+       legend=c("Median","Quartiles","10% and 90%"))
+```
+
+---
+
+
+```{r echo=FALSE}
+median<-svysmooth(BPXDAR~RIDAGEYR,design=des,method="quantreg",quantile=0.5)
+plot(median,ylim=c(30,90),ylab="Diastolic BP (mmHg)",xlab="Age (yrs)",lwd=2)
+for(qi in c(.25,.75)){
+	quartile <- svysmooth(BPXDAR~RIDAGEYR,design=des,method="quantreg",quantile=qi)
+	lines(quartile,lwd=1)
+}
+for(qi in c(.1,.9)){
+	decile <- svysmooth(BPXDAR~RIDAGEYR,design=des,method="quantreg",quantile=qi)
+	lines(decile,lwd=1,lty=3)
+}
+legend("bottomright",lty=c(1,1,3),lwd=c(2,1,1),bty="n",legend=c("Median","Quartiles","10% and 90%"))
+```
+
+---
+
+# Regression: ISH
+
+We'll use **isolated systolic hypertension** as the outcome variable
+
+```{r}
+des<-update(des, ish=(BPXSAR>140) & (BPXDAR<90))
+```
+
+Also, linear splines in age, because linear is *obviously* not sound
+
+```{r}
+des<-update(des, 
+            age1=pmin(RIDAGEYR,50)/10,
+            age2=pmin(pmax(RIDAGEYR,50),65)/10,
+            age3=pmin(pmax(RIDAGEYR,65),90)/10)
+```
+
+
+---
+
+## Sequence of models
+
+```{r}
+ish0s <- svyglm(ish~age1+age2+age3, 
+  design=des, family=quasibinomial)	
+ish1s<- svyglm(ish~age1+age2+age3+factor(RIDRETH1),
+  design=des,family=quasibinomial)	
+ish2s<- svyglm(ish~age1+age2+age3+RIAGENDR+factor(RIDRETH1),
+  design=des, family=quasibinomial)	
+ish3s<- svyglm(ish~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1), 
+  design=des,family=quasibinomial)	
+ish4s<- svyglm(ish~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+sodium, 
+  design=des,family=quasibinomial)	
+```
+
+---
+
+```{r}
+anova(ish3s)
+```
+
+---
+
+```{r}
+anova(ish3s,ish4s)
+```
+
+No real evidence that sodium matters?
+
+Try some more variables
+
+```{r}
+ish5<- svyglm(ish~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI, 
+  design=des,family=quasibinomial)	
+ish6<- svyglm(ish~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI+sodium+potassium, 
+  design=des,family=quasibinomial)	
+{{anova(ish5, ish6)}}
+```
+
+---
+
+# Nonlinearity?
+
+```{r}
+library(splines)
+ish7<- svyglm(ish~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI+ns(sodium,3)+potassium, 
+  design=des,family=quasibinomial)	
+anova(ish5, ish7)
+```
+
+---
+
+# Continuous outcome
+
+```{r}
+sysbp<- svyglm(BPXSAR~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI, 
+  design=des)
+sysbp_sodium<- svyglm(BPXSAR~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI+sodium+potassium, 
+  design=des)	
+anova(sysbp, sysbp_sodium)  
+```
+
+---
+
+```{r}
+coef(summary(sysbp_sodium))
+```
+
+---
+
+## Ignoring survey design
+
+```{r}
+wrong_sodium<-glm(BPXSAR~(age1+age2+age3)*RIAGENDR+factor(RIDRETH1)+BMXBMI+sodium+potassium, 
+  data=model.frame(des))	
+summary(coef(wrong_sodium)/coef(sysbp_sodium))
+summary(SE(wrong_sodium)/SE(sysbp_sodium))
+
+```
+
+---
+
+# Other things we can do
+
+- `svyolr`: ordinal logistic regression and similar
+- `svykm`, `svycoxph`: survival analysis
+- `svyloglin`: loglinear models
+- `svyranktest`: design-based rank tests, *if you must*
+- `AIC`, `BIC`: for `svyglm` only, so far, design-based versions of AIC and BIC
+- `svrepdesign`: designs specificed by replicate weights
+- `as.svrepdesign`: creating replicate weights (cf bootstrap/jackknife)
+- `postStratify`, `rake`, `calibrate`: rescale weights to match known population information.
+
+---
+
+# Two-phase sampling
+
+**phase**: sampling at phase II can depend on phase I data
+
+Technical difference: we only know sampling probability conditional on **this phase-I sample**
+
+Doesn't affect most of the formulas. 
+
+---
+
+# Examples
+
+- trivially: case-control sampling: $Y$ known at phase I, $X$ sampled at phase II
+- case-cohort: random subset plus all the cases
+- joint sampling based on (surrogates for) outcome and exposure
+
+Example: National Wilms' Tumour Studies: validation of histology assessment
+
+Lots of opportunities to think about optimal design!
+
+
+
+---
+
+```{r results='hide'}
+data(nwtco)
+nwtco$in_cc2<-as.logical(with(nwtco, ifelse(rel | instit==2,1,rbinom(nrow(nwtco),1,.1))))
+{{dccs8<-twophase(id=list(~seqno,~seqno),
+                strata=list(NULL,~interaction(rel,stage,instit)),
+                data=nwtco, subset=~in_cc2)}}
+ 
+svyglm(rel~factor(stage)*factor(histol),
+       design=dccs8,family=quasibinomial())
+```
+
+
+---
+```{r echo=FALSE}
+data(nwtco)
+nwtco$in_cc2<-as.logical(with(nwtco,
+                              ifelse(rel | instit==2,1,rbinom(nrow(nwtco),1,.1))))
+dccs8<-twophase(id=list(~seqno,~seqno),
+                strata=list(NULL,~interaction(rel,stage,instit)),
+                data=nwtco, subset=~in_cc2)
+ 
+svyglm(rel~factor(stage)*factor(histol), design=dccs8,family=quasibinomial())
+```
+
+---
+
+# More accurately
+
+Sampling was actually stratified just on outcome, then post-stratified
+
+```{r eval=FALSE}
+dccs2<-twophase(id=list(~seqno,~seqno),strata=list(NULL,~interaction(rel,instit)),
+    data=nwtco, subset=~in_cc2)
+{{gccs8<-calibrate(dccs2, phase=2, formula=~interaction(rel,stage,instit))}}
+svyglm(rel~factor(stage)*factor(histol), design=gccs8,family=quasibinomial())
+``` 
+
+
+---
+
+```{r echo=FALSE}
+dccs2<-twophase(id=list(~seqno,~seqno),strata=list(NULL,~interaction(rel,instit)),
+    data=nwtco, subset=~in_cc2)
+{{gccs8<-calibrate(dccs2, phase=2, formula=~interaction(rel,stage,instit))}}
+svyglm(rel~factor(stage)*factor(histol),
+ design=gccs8,family=quasibinomial())
+``` 
+
+---
+
+# Adding features
+
+**Ask**
+
+Ideally, with
+
+- a paper describing the estimator exactly
+- a test data set
+
+I can try to just invent things (AIC, BIC, rank tests), but it takes longer
+
+**Note**: mixed models are **hard** for non-obvious reasons. I'm working on `svylme` but it's not really done yet. 
+
+---
+
+# Where to find things
+
+- CRAN `survey`
+- http://r-forge.r-project.org/projects/r-survey/
+- `@tslumley`
+- https://notstatschat.rbind.io
+- github/tslumley/svylme
+- **github/tslumley/svy-NY**
+
